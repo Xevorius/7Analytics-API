@@ -86,10 +86,9 @@ def get_pour_point_feature_collection() -> str:
     # con = create_engine("")
     # dataframe = geopandas.GeoDataFrame.from_postgis(sql, con)
     # gdf = dataframe.to_crs(4326)
-
-    print(os.environ['AMAZON_S3_AWS_ACCESS_KEY_ID'])
+    print(os.environ)
     # return gdf.to_json()
-    return os.environ['AMAZON_S3_AWS_ACCESS_KEY_ID']
+    return 'test'
 
 @app.get("/MET/point/nearest", tags=['MET.NO'])
 def get_nearest_weather_station(point_wkt: str, date_range: str, crs=4326) -> list[dict]:
