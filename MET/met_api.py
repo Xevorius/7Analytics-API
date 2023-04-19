@@ -1,7 +1,12 @@
 import requests
+from dotenv import dotenv_values
 from pandas import Series
 
 from date_range import DateRange
+
+frost_station_endpoint = 'https://frost.met.no/sources/v0.jsonld'
+frost_observation_endpoint = 'https://frost.met.no/observations/v0.jsonld'
+secrets = dotenv_values('.env')
 
 
 def get_station_observations(ids: list[str], date_range: DateRange) -> list[dict]:
@@ -19,7 +24,7 @@ def get_station_observations(ids: list[str], date_range: DateRange) -> list[dict
         'fields': 'geometry, value, referenceTime, sourceId',
     }
     try:
-        r = requests.get(frost_observation_endpoint, parameters, auth=(frost_client_id, ''))
+        r = requests.get(frost_observation_endpoint, parameters, auth=(secrets['MET_FROST_CLIENT_ID'], ''))
         if r.status_code == 200:
             json = r.json()
             data = json['data']
@@ -60,7 +65,7 @@ def get_nearest_stations_to_point(point: Series, date_range: DateRange, number_o
         'fields': 'geometry, distance, id, name',
         'validtime': date_range
     }
-    r = requests.get(frost_station_endpoint, parameters, auth=(frost_client_id, ''))
+    r = requests.get(frost_station_endpoint, parameters, auth=(secrets['MET_FROST_CLIENT_ID'], ''))
     if r.status_code == 200:
         json = r.json()
         data = json['data']
@@ -142,7 +147,7 @@ def get_station_within_polygon(polygon: Series, date_range: DateRange) -> list[s
         'fields': 'geometry, distance, id, name',
         'validtime': date_range
     }
-    r = requests.get(frost_station_endpoint, parameters, auth=(frost_client_id, ''))
+    r = requests.get(frost_station_endpoint, parameters, auth=(secrets['MET_FROST_CLIENT_ID'], ''))
     if r.status_code == 404:
         json = r.json()
         print('FROST API (Stations): ' + json['error']['reason'])

@@ -16,12 +16,15 @@ from pyogrio import read_dataframe
 from sqlalchemy import create_engine
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
+from dotenv import dotenv_values
 
 from MET.forecast_api import get_forecast
 from PipeLife.culvert import PipeLifeUser
 from date_range import DateRange
 from MET.met_api import get_nearest_stations_to_point, get_weather_stations, get_station_within_polygon, \
     get_station_observations, get_stations_with_full_observations
+
+secrets = dotenv_values('.env')
 
 tags_metadata = [
     {
@@ -55,8 +58,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-options = {'vfs.s3.aws_access_key_id': '',
-           'vfs.s3.aws_secret_access_key': '',
+options = {'vfs.s3.aws_access_key_id': secrets['AMAZON_S3_AWS_ACCESS_KEY_ID'],
+           'vfs.s3.aws_secret_access_key': secrets['AMAZON_S3_AWS_SECRET_ACCESS_KEY'],
            'vfs.s3.scheme': 'https',
            'vfs.s3.region': 'eu-west-1'
            }
@@ -74,6 +77,8 @@ amount of time to load these variables.
 """
 Uncomment the following line if you want to monitoring the Dask calculations though a  Dask diagnostics panel.
 """
+
+
 # client = Client("tcp://127.0.0.1:63883")
 
 
@@ -82,13 +87,12 @@ def get_pour_point_feature_collection() -> str:
     """
     Returns all the pour points from the POSTGIS database in a GeoJSON format.
     """
-    # sql = f"""SELECT * FROM smartculvert.pour_point"""
-    # con = create_engine("")
-    # dataframe = geopandas.GeoDataFrame.from_postgis(sql, con)
-    # gdf = dataframe.to_crs(4326)
-    print(os.environ)
-    # return gdf.to_json()
-    return 'test'
+    sql = f"""SELECT * FROM smartculvert.pour_point"""
+    con = create_engine("postgresql://postgres:BergenFlom2020!@dev.7analytics.no:5432/postgres")
+    dataframe = geopandas.GeoDataFrame.from_postgis(sql, con)
+    gdf = dataframe.to_crs(4326)
+    return gdf.to_json()
+
 
 @app.get("/MET/point/nearest", tags=['MET.NO'])
 def get_nearest_weather_station(point_wkt: str, date_range: str, crs=4326) -> list[dict]:
@@ -256,7 +260,6 @@ def get_closest_culvert_data(point_wkt: str, date_range: str, crs=4326) -> list[
     request_headers = {
         "Accept": "application/json",
         "X-API-Key": "JkbAM/hEkk+5Z7mJIlC3fQ==",
-
     }
     nve_stations = requests.get(url, headers=request_headers)
     parsed_result = nve_stations.json()
@@ -312,7 +315,14 @@ def get_water_level_from_id(pipelife_ids: str, date_range: str) -> list[Any]:
     """
     date_range = DateRange(date_range)
 
-    pipelife_users = []
+    pipelife_users = [{'TCN_CLIENT_ID': secrets['PIPELIFE_PIPELIFE_CLIENT_ID'],
+                       'TCN_CLIENT_SECRET': secrets['PIPELIFE_PIPELIFE_SECRET'],
+                       'TCN_MYUSER': secrets['PIPELIFE_PIPELIFE_USER'],
+                       'TCN_MYPASS': secrets['PIPELIFE_PIPELIFE_PASSWORD']},
+                      {'TCN_CLIENT_ID': secrets['PIPELIFE_BANENOR_CLIENT_ID'],
+                       'TCN_CLIENT_SECRET': secrets['PIPELIFE_BANENOR_SECRET'],
+                       'TCN_MYUSER': secrets['PIPELIFE_BANENOR_USER'],
+                       'TCN_MYPASS': secrets['PIPELIFE_BANENOR_PASSWORD']}]
 
     pipelifeusers = [PipeLifeUser(client_id=user['TCN_CLIENT_ID'], client_secret=user['TCN_CLIENT_SECRET'],
                                   client_username=user['TCN_MYUSER'], password=user['TCN_MYPASS']) for user in
