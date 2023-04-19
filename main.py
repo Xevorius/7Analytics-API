@@ -1,9 +1,7 @@
 import io
 import itertools
-import os
 import time
 from typing import Any
-
 import geopandas
 import pandas as pd
 import requests
@@ -17,7 +15,6 @@ from sqlalchemy import create_engine
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse
 from dotenv import dotenv_values
-
 from MET.forecast_api import get_forecast
 from PipeLife.culvert import PipeLifeUser
 from date_range import DateRange
@@ -27,10 +24,6 @@ from MET.met_api import get_nearest_stations_to_point, get_weather_stations, get
 secrets = dotenv_values('.env')
 
 tags_metadata = [
-    {
-        "name": "Default",
-        "description": "All operations without any input variables",
-    },
     {
         "name": "MET.NO",
         "description": "All operations interfacing with **MET.NO** data gathered from the FROST API.",
@@ -46,6 +39,10 @@ tags_metadata = [
     {
         "name": "PipeLife",
         "description": "All operations interfacing with **PipeLife** data gathered from the PipeLife API.",
+    },
+    {
+        "name": "7A PostGIS",
+        "description": "All operations interfacing with the **7Analytics PostGIS** database",
     },
 ]
 
@@ -82,7 +79,7 @@ Uncomment the following line if you want to monitoring the Dask calculations tho
 # client = Client("tcp://127.0.0.1:63883")
 
 
-@app.get('/pour_point', tags=['Default'])
+@app.get('PostGIS/get_pour_points', tags=['7A PostGIS'])
 def get_pour_point_feature_collection() -> str:
     """
     Returns all the pour points from the POSTGIS database in a GeoJSON format.

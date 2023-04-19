@@ -81,7 +81,7 @@ def get_nearest_station_observations(point: Series, date_range: DateRange) -> di
     :param date_range: The date range of which the user wants the historic precipitation.
     :return: A dictionary representin the closest weather station with a complete observation list to the point
     """
-    possible_stations_of_feature = get_nearest_stations_to_point(point, date_range, 100)
+    possible_stations_of_feature = get_nearest_stations_to_point(point, date_range, 50)
     observations = get_station_observations(','.join(str(station['id']) for station in possible_stations_of_feature),
                                             date_range)
     closest_stations_with_full_result_range = get_stations_with_full_observations(possible_stations_of_feature,
