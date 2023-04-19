@@ -12,7 +12,7 @@ jobs:
       with:
         python-version: 3.8
         
-    - name: Test env vars for python
+    - name: execute py script
       run: python main.py
       env:
         AMAZON_S3_AWS_ACCESS_KEY_ID: ${{ secrets.AMAZON_S3_AWS_ACCESS_KEY_ID }} 
