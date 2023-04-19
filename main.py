@@ -1,5 +1,6 @@
 import io
 import itertools
+import os
 import time
 from typing import Any
 
@@ -76,24 +77,19 @@ Uncomment the following line if you want to monitoring the Dask calculations tho
 # client = Client("tcp://127.0.0.1:63883")
 
 
-@app.get('/', tags=['Default'])
-def index() -> str:
-    return 'Welcome to the historical IMERG precipitation api'
-
-
 @app.get('/pour_point', tags=['Default'])
 def get_pour_point_feature_collection() -> str:
     """
     Returns all the pour points from the POSTGIS database in a GeoJSON format.
     """
-    sql = f"""SELECT * FROM smartculvert.pour_point"""
-    con = create_engine("")
-    dataframe = geopandas.GeoDataFrame.from_postgis(sql, con)
-    gdf = dataframe.to_crs(4326)
+    # sql = f"""SELECT * FROM smartculvert.pour_point"""
+    # con = create_engine("")
+    # dataframe = geopandas.GeoDataFrame.from_postgis(sql, con)
+    # gdf = dataframe.to_crs(4326)
 
-    print(gdf.to_json())
-    return gdf.to_json()
-
+    print(os.environ['AMAZON_S3_AWS_ACCESS_KEY_ID'])
+    # return gdf.to_json()
+    return os.environ['AMAZON_S3_AWS_ACCESS_KEY_ID']
 
 @app.get("/MET/point/nearest", tags=['MET.NO'])
 def get_nearest_weather_station(point_wkt: str, date_range: str, crs=4326) -> list[dict]:
