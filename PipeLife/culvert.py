@@ -16,7 +16,7 @@ import pytz
 import requests
 from termcolor import colored
 
-from PipeLife.culvert_exception import InvalidPipeLifeCredentials
+from exceptions import InvalidPipeLifeCredentials
 from date_range import DateRange
 
 

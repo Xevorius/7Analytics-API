@@ -1,7 +1,7 @@
 import io
 import itertools
 import time
-from typing import Any
+from typing import Any, Generator
 import geopandas
 import pandas as pd
 import requests
@@ -17,6 +17,7 @@ from starlette.responses import StreamingResponse
 from dotenv import dotenv_values
 from MET.forecast_api import get_forecast
 from PipeLife.culvert import PipeLifeUser
+from Schemas.schemas_met import MetStation
 from date_range import DateRange
 from MET.met_api import get_nearest_stations_to_point, get_weather_stations, get_station_within_polygon, \
     get_station_observations, get_stations_with_full_observations
@@ -43,6 +44,10 @@ tags_metadata = [
     {
         "name": "7A PostGIS",
         "description": "All operations interfacing with the **7Analytics PostGIS** database",
+    },
+    {
+        "name": "Misc",
+        "description": "All operations that don't fall under any of the other categories",
     },
 ]
 
@@ -79,7 +84,7 @@ Uncomment the following line if you want to monitoring the Dask calculations tho
 # client = Client("tcp://127.0.0.1:63883")
 
 
-@app.get('PostGIS/get_pour_points', tags=['7A PostGIS'])
+@app.get('/PostGIS/get_pour_points', tags=['7A PostGIS'])
 def get_pour_point_feature_collection() -> str:
     """
     Returns all the pour points from the POSTGIS database in a GeoJSON format.
@@ -92,19 +97,22 @@ def get_pour_point_feature_collection() -> str:
 
 
 @app.get("/MET/point/nearest", tags=['MET.NO'])
-def get_nearest_weather_station(point_wkt: str, date_range: str, crs=4326) -> list[dict]:
+def get_nearest_weather_station(point_wkt: str, date_range: str, crs=4326) -> MetStation | str:
     """
     Returns the MET station id closest to the input point with complete precipitation data.
     """
     date_range = DateRange(date_range)
     point = GeoSeries.from_wkt([point_wkt], crs=crs).to_crs(4326)
     station = get_nearest_stations_to_point(point, date_range, 1)
-    return station
+    if station:
+        return station[0]
+    else:
+        'No MET station was found that is close to the given point. Try another location!'
 
 
 @app.get("/MET/point/precipitation", tags=['MET.NO'])
 async def get_nearest_full_weather_station(point_wkt: str, date_range: str, file=None,
-                                           crs=4326):
+                                           crs=4326) -> MetStation | str:
     """
     Returns a **list** or **.CSV** containing the hourly precipitation measured by the weather station closed to the
     input point with complete precipitation data.
@@ -112,6 +120,8 @@ async def get_nearest_full_weather_station(point_wkt: str, date_range: str, file
     date_range = DateRange(date_range)
     point = GeoSeries.from_wkt([point_wkt], crs=crs).to_crs(4326)
     station_precipitation = get_weather_stations(point, date_range)
+    if station_precipitation is None:
+        return 'No MET station was found that has measured relevant data to your query. Try another location or date range!'
 
     if file:
         print(len(date_range.unix_list))
@@ -124,7 +134,7 @@ async def get_nearest_full_weather_station(point_wkt: str, date_range: str, file
         response = StreamingResponse(iter([stream.getvalue()]),
                                      media_type="text/csv"
                                      )
-        response.headers["Content-Disposition"] = f"attachment; filename={station_precipitation['name']}.csv"
+        response.headers["Content-Disposition"] = f"attachment; filename={station_precipitation.name}.csv"
         return response
 
     else:
@@ -197,7 +207,7 @@ async def get_imerg_precipitation_from_point(point_wkt: str, date_range: str, fi
 
 
 @app.get("/MET/polygon/all", tags=['MET.NO'])
-def get_all_weather_station(polygon_wkt: str, date_range: str, crs=4326) -> list[dict]:
+def get_all_weather_station(polygon_wkt: str, date_range: str, crs=4326) -> list[MetStation]:
     """
     Get all weather stations within the input polygon.
     """
@@ -253,7 +263,7 @@ def get_closest_culvert_data(point_wkt: str, date_range: str, crs=4326) -> list[
     date_range = DateRange(date_range)
     pointer = geopandas.GeoDataFrame(geometry=[shapely.wkt.loads(point_wkt)], crs=crs).to_crs(4326)
 
-    url = f'https://hydapi.nve.no/api/v1/Stations?Active=1'
+    url = f'https://c/api/v1/Stations?Active=1'
     request_headers = {
         "Accept": "application/json",
         "X-API-Key": "JkbAM/hEkk+5Z7mJIlC3fQ==",
@@ -261,8 +271,15 @@ def get_closest_culvert_data(point_wkt: str, date_range: str, crs=4326) -> list[
     nve_stations = requests.get(url, headers=request_headers)
     parsed_result = nve_stations.json()
     df = pd.json_normalize(parsed_result['data'])
+    df['parameters'] = [[x['parameter'] for x in i] for i in df.seriesList]
+    dff = df[df['parameters'].apply(lambda x: 1000 in x or 1001 in x)]
+    dff['seriesList'] = [[x for x in i if x['parameter'] == 1000 or x['parameter'] == 1001] for i in dff.seriesList]
+    dff['dateRange'] = [[[DateRange(f"{y['dataFromTime'][:10]}/{y['dataToTime'][:10]}") for y in x['resolutionList'] if
+                          y['resTime'] == 60] for x in i] for i in dff.seriesList]
+    dfff = dff[dff['dateRange'].apply(lambda x: bool(list(filter(None, x))))]
     gdf = geopandas.GeoDataFrame(
-        df, geometry=geopandas.points_from_xy(df.longitude, df.latitude), crs=4326)
+        dfff[["stationId", "stationName", "latitude", "longitude", "seriesList"]],
+        geometry=geopandas.points_from_xy(dfff.longitude, dfff.latitude), crs=4326)
     culvert = pointer.sjoin_nearest(gdf).merge(gdf, left_on="index_right", right_index=True)
     culvert_id = culvert.iloc[0]['stationId_x']
     url = f"https://hydapi.nve.no/api/v1/Observations?StationId={culvert_id}&Parameter=1000,1001&ResolutionTime=60&ReferenceTime={date_range}"
@@ -277,23 +294,31 @@ def get_closest_culvert_data(point_wkt: str, date_range: str, crs=4326) -> list[
 @app.get("/NVE/polygon/flow", tags=['NVE'])
 def get_all_culvert_data_within_polygon(polygon_wkt: str, date_range: str, crs=4326) -> list[Any]:
     """
-    **Not implemented yet**
-    """
-    pass
-    # date_range = DateRange(date_range)
-    # pointer = geopandas.GeoDataFrame(geometry=[shapely.wkt.loads(polygon_wkt)], crs=crs).to_crs(4326)
-    #
-    # url = f'https://hydapi.nve.no/api/v1/Stations?Active=1'
-    # request_headers = {
-    #     "Accept": "application/json",
-    #     "X-API-Key": "JkbAM/hEkk+5Z7mJIlC3fQ==",
-    #
-    # }
-    # nve_stations = requests.get(url, headers=request_headers)
-    # parsed_result = nve_stations.json()
-    # df = pd.json_normalize(parsed_result['data'])
-    # gdf = geopandas.GeoDataFrame(
-    #     df, geometry=geopandas.points_from_xy(df.longitude, df.latitude), crs=4326)
+     Returns hourly water level and/or water flow (depending on what is available) of the closest culvert to the input
+     point.
+     """
+    date_range = DateRange(date_range)
+    pointer = geopandas.GeoDataFrame(geometry=[shapely.wkt.loads(polygon_wkt)], crs=crs).to_crs(4326)
+
+    url = f'https://c/api/v1/Stations?Active=1&Polygon={polygon_wkt}'
+    request_headers = {
+        "Accept": "application/json",
+        "X-API-Key": "JkbAM/hEkk+5Z7mJIlC3fQ==",
+    }
+    nve_stations = requests.get(url, headers=request_headers)
+    parsed_result = nve_stations.json()
+    df = pd.json_normalize(parsed_result['data'])
+    print(df)
+    df['parameters'] = [[x['parameter'] for x in i] for i in df.seriesList]
+    dff = df[df['parameters'].apply(lambda x: 1000 in x or 1001 in x)]
+    dff['seriesList'] = [[x for x in i if x['parameter'] == 1000 or x['parameter'] == 1001] for i in dff.seriesList]
+    dff['dateRange'] = [[[DateRange(f"{y['dataFromTime'][:10]}/{y['dataToTime'][:10]}") for y in x['resolutionList'] if
+                          y['resTime'] == 60] for x in i] for i in dff.seriesList]
+    dfff = dff[dff['dateRange'].apply(lambda x: bool(list(filter(None, x))))]
+    gdf = geopandas.GeoDataFrame(
+        dfff[["stationId", "stationName", "latitude", "longitude", "seriesList"]],
+        geometry=geopandas.points_from_xy(dfff.longitude, dfff.latitude), crs=4326)
+    print(gdf)
     # culvert = pointer.sjoin_nearest(gdf).merge(gdf, left_on="index_right", right_index=True)
     # culvert_id = culvert.iloc[0]['stationId_x']
     # url = f"https://hydapi.nve.no/api/v1/Observations?StationId={culvert_id}&Parameter=1000,1001&ResolutionTime=60&ReferenceTime={date_range}"
@@ -302,7 +327,7 @@ def get_all_culvert_data_within_polygon(polygon_wkt: str, date_range: str, crs=4
     #     "X-API-Key": "JkbAM/hEkk+5Z7mJIlC3fQ==",
     # }
     # nve_stations = requests.get(url, headers=request_headers)
-    # return [nve_stations.json()['data'][0]['parameterNameEng'], nve_stations.json()['data'][0]['observations']]
+    return gdf
 
 
 @app.get("/PipeLife/id/waterlevel", tags=['PipeLife'])
@@ -339,3 +364,16 @@ def get_forecast_from_point(point_wkt: str, crs=4326) -> list[Any]:
 
     forecast = get_forecast(pointer)
     return forecast
+
+
+@app.get("/Misc/check_all_datasets", tags=['Misc'])
+def get_forecast_from_point(point_wkt: str, date_range: str, crs=4326) -> dict[str, str | bool]:
+    """
+    Returns a list containing the forecasted precipitation of the input point.
+    """
+    # date_range = DateRange(date_range)
+    # pointer = geopandas.GeoDataFrame(geometry=[shapely.wkt.loads(point_wkt)], crs=crs).to_crs(4326)
+
+    get_nearest_full_weather_station(point_wkt, date_range, crs=crs)
+
+    return {'NVE': False, 'MET': False, 'IMERG': False, 'Local_Grid': "Under construction"}
