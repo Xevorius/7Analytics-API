@@ -1,12 +1,21 @@
 from pydantic import BaseModel
 
-from Schemas.schemas_generic import Geometry
-
 
 class MetStation(BaseModel):
     id: str
     name: str
-    geometry: dict
+    geometry: str
     distance: float | None
-    precip_list: list[tuple[int, float]] | None
-    geometry_origin: Geometry | None
+    precipitation: list[float] | None
+    geometry_origin: str | None
+
+    class Config:
+        arbitrary_types_allowed = True
+
+
+class MetFeature(BaseModel):
+    feature: list
+
+
+class MetForcast(BaseModel):
+    shape: list[MetFeature]

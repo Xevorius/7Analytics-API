@@ -1,17 +1,14 @@
-import json
-from json import loads
 from sqlite3 import ProgrammingError
-
+import pandas
 import pandas as pd
 import requests
 import shapely
 from dotenv import dotenv_values
 from geopandas import GeoDataFrame as gpd
-from pandas import Series
-from shapely.geometry import mapping
+from pandas import Series, DataFrame
+from shapely import wkt
+from shapely.geometry import Point
 from sqlalchemy import create_engine
-
-from Schemas.schemas_met import MetStation
 from date_range import DateRange
 from exceptions import InvalidLocationIdList
 
@@ -20,7 +17,8 @@ frost_observation_endpoint = 'https://frost.met.no/observations/v0.jsonld'
 secrets = dotenv_values('.env')
 
 
-def get_station_observations(ids: str, date_range: DateRange) -> list[dict]:
+def get_station_observations(ids: str, date_range: DateRange) \
+        -> list[dict]:
     """
     This function gets the historical precipitation measured by the requested weather stations
 
@@ -37,30 +35,33 @@ def get_station_observations(ids: str, date_range: DateRange) -> list[dict]:
     try:
         r = requests.get(frost_observation_endpoint, parameters, auth=(secrets['MET_FROST_CLIENT_ID'], ''))
         if r.status_code == 200:
-            json = r.json()
-            data = json['data']
-            return data
+            response = r.json()
+            df = pd.json_normalize(response['data'])
+            df.rename(columns={'sourceId': 'id'}, inplace=True)
+            df['id'] = [i[:7] for i in df.id]
+            df['precipitation'] = [[i[0]['value']] for i in df['observations']]
+            agg_functions = {'id': 'first', 'precipitation': 'sum'}
+            dff = df.groupby(df.id).aggregate(agg_functions).reset_index(drop=True)
+            dfff = dff[dff['precipitation'].apply(lambda x: len(x) == len(date_range.unix_list))]
+            return dfff
         if r.status_code == 412:
             json = r.json()
             data = 'FROST API (Observations): ' + json['error']['reason']
-            print(data)
             return data
         if r.status_code == 404:
             json = r.json()
             data = 'FROST API (Observations): ' + json['error']['reason']
-            print(data)
             return data
         if r.status_code == 400:
             json = r.json()
             data = 'FROST API (Observations): ' + json['error']['reason']
-            print(data)
             return data
-    except Exception:
-        print("Something is really wrong :(")
+    except Exception as e:
+        print(f"Something is really wrong :( ({e})")
 
 
-def get_nearest_stations_to_point(point: Series, date_range: DateRange, number_of_nearest_stations: int) -> list[
-    MetStation]:
+def get_nearest_stations_to_point(point: Series, date_range: DateRange, number_of_nearest_stations: int) \
+        -> pandas.DataFrame:
     """
     Gets a defined number of weather stations that are close to the selected point on the map.
 
@@ -80,11 +81,13 @@ def get_nearest_stations_to_point(point: Series, date_range: DateRange, number_o
     r = requests.get(frost_station_endpoint, parameters, auth=(secrets['MET_FROST_CLIENT_ID'], ''))
     if r.status_code == 200:
         response = r.json()
-        data = response['data']
-        return [MetStation.parse_obj(i) for i in data]
+        df = pd.json_normalize(response['data'], max_level=0)
+        df['geometry'] = df.apply(lambda row: Point(row['geometry']['coordinates']), axis=1)
+        return df
 
 
-def get_nearest_station_observations(point: Series, date_range: DateRange) -> MetStation | None:
+def get_processed_station_observations(point: Series, date_range: DateRange) \
+        -> DataFrame:
     """
     loops through all the weather stations with a complete observation list and returns the closest station to the
     point.
@@ -94,52 +97,29 @@ def get_nearest_station_observations(point: Series, date_range: DateRange) -> Me
     :return: A dictionary representin the closest weather station with a complete observation list to the point
     """
     possible_stations_of_feature = get_nearest_stations_to_point(point, date_range, 50)
-    observations = get_station_observations(','.join(str(station.id) for station in possible_stations_of_feature),
-                                            date_range)
-    closest_stations_with_full_result_range = get_stations_with_full_observations(possible_stations_of_feature,
-                                                                                  observations, date_range)
-    if len(closest_stations_with_full_result_range) > 0:
-        full_station = closest_stations_with_full_result_range[0]
-        full_station.precip_list = list(zip(date_range.unix_list, [i['observations'][0]['value'] for i in observations if
-                                    i['sourceId'].split(':')[0] ==
-                                    closest_stations_with_full_result_range[0].id]))
-        full_station.geometry_origin = json.loads(point.to_json())['features'][0]['geometry']
-        return full_station
-    else:
-        return None
+    observations = get_station_observations(",".join(possible_stations_of_feature.id), date_range)
+    closest_stations_with_full_result_range = pd.merge(possible_stations_of_feature, observations, on=["id"])
+    return closest_stations_with_full_result_range
 
 
-def get_stations_with_full_observations(stations: list, observations: list[dict], date_range: DateRange) -> list[
-    MetStation]:
+def get_processed_station_observations_poly(point: Series, date_range: DateRange) \
+        -> DataFrame:
     """
-    Returns only the weather stations that have a complete observation list.
+    loops through all the weather stations with a complete observation list and returns the closest station to the
+    point.
 
-    :param stations: List of all the weather stations that are either close to a selected point or within a selected
-                     area.
-    :param observations: List of precipitation values of all the station in the stations list.
+    :param point: A row of the geodataframe containing the information of one point.
     :param date_range: The date range of which the user wants the historic precipitation.
-    :return: List of all the weather stations with a complete observation list from closest to furthest away.
+    :return: A dictionary representin the closest weather station with a complete observation list to the point
     """
-    stations_with_values = list(set([i['sourceId'].split(':')[0] for i in observations]))
-    stations_with_full_result_range = [i for i in stations if i.id in stations_with_values if
-                                       len([x for x in observations if
-                                            x['sourceId'].split(':')[0] == i.id]) ==
-                                       len(date_range.unix_list)]
-    return stations_with_full_result_range
+    possible_stations_of_feature = get_station_within_polygon(point, date_range)
+    observations = get_station_observations(",".join(possible_stations_of_feature.id), date_range)
+    closest_stations_with_full_result_range = pd.merge(possible_stations_of_feature, observations, on=["id"])
+    return closest_stations_with_full_result_range
 
 
-def get_weather_stations(point: Series, date_range: DateRange) -> MetStation | None:
-    """
-    This function gets all the historical precipitation based on the user's inputted geofeatures.
 
-    :param feature_frame: Geodataframe containing all the user's inputted geofeatures.
-    :param date_range: The date range of which the user wants the historic precipitation.
-    :return: A dictionary containing all the weather station and their observations that were requested.
-    """
-    return get_nearest_station_observations(point, date_range)
-
-
-def get_station_within_polygon(polygon: Series, date_range: DateRange) -> list[MetStation]:
+def get_station_within_polygon(polygon: Series, date_range: DateRange) -> DataFrame:
     """
     Gets all the weather stations that are within the selected area on the map.
 
@@ -159,9 +139,10 @@ def get_station_within_polygon(polygon: Series, date_range: DateRange) -> list[M
         json = r.json()
         print('FROST API (Stations): ' + json['error']['reason'])
     if r.status_code == 200:
-        json = r.json()
-        data = json['data']
-        return [MetStation.parse_obj(i) for i in data]
+        response = r.json()
+        df = pd.json_normalize(response['data'], max_level=0)
+        df['geometry'] = df.apply(lambda row: Point(row['geometry']['coordinates']), axis=1)
+        return df
 
 
 def get_geo_dataframe(location_ids: list[str], validation=None) -> gpd | None:

@@ -1,26 +1,27 @@
 import io
 import itertools
 import time
-from typing import Any, Generator
+from typing import Any, List
 import geopandas
 import pandas as pd
 import requests
 import shapely
 import tiledb
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from geopandas import GeoSeries
+from geopandas import GeoDataFrame as gpd
 import numpy as np
 from pyogrio import read_dataframe
 from sqlalchemy import create_engine
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import StreamingResponse
+from starlette.responses import StreamingResponse, Response
 from dotenv import dotenv_values
 from MET.forecast_api import get_forecast
 from PipeLife.culvert import PipeLifeUser
 from Schemas.schemas_met import MetStation
 from date_range import DateRange
-from MET.met_api import get_nearest_stations_to_point, get_weather_stations, get_station_within_polygon, \
-    get_station_observations, get_stations_with_full_observations
+from MET.met_api import get_nearest_stations_to_point, get_station_within_polygon, get_processed_station_observations, \
+    get_processed_station_observations_poly
 
 secrets = dotenv_values('.env')
 
@@ -97,48 +98,131 @@ def get_pour_point_feature_collection() -> str:
 
 
 @app.get("/MET/point/nearest", tags=['MET.NO'])
-def get_nearest_weather_station(point_wkt: str, date_range: str, crs=4326) -> MetStation | str:
+def get_nearest_weather_station(point_wkt: str, date_range: str, crs=4326, output: str = 'python') -> MetStation | None:
     """
     Returns the MET station id closest to the input point with complete precipitation data.
     """
     date_range = DateRange(date_range)
     point = GeoSeries.from_wkt([point_wkt], crs=crs).to_crs(4326)
-    station = get_nearest_stations_to_point(point, date_range, 1)
-    if station:
-        return station[0]
-    else:
-        'No MET station was found that is close to the given point. Try another location!'
+    station_df = get_nearest_stations_to_point(point, date_range, 1)
+    station_df['geometry_origin'] = point_wkt
+    if station_df.empty:
+        raise HTTPException(status_code=204,
+                            detail=f"No MET station was found that is close to the given point. Try another location!")
+    if output == 'python':
+        station_df['geometry'] = station_df['geometry'].apply(lambda x: x.wkt)
+        return MetStation.parse_obj(station_df.iloc[0])
+    elif output == 'geojson':
+        return Response(content=gpd(station_df, geometry=station_df['geometry'], crs=crs).to_json(),
+                        media_type="application/json")
+    elif output == 'file':
+        stream = io.StringIO()
+        station_df.to_csv(stream, index=False)
+        response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
+        response.headers["Content-Disposition"] = f"attachment; filename={station_df.name}.csv"
+        return response
+    raise HTTPException(status_code=400, detail=f"Export variable: '{output}' not recognized")
 
 
 @app.get("/MET/point/precipitation", tags=['MET.NO'])
-async def get_nearest_full_weather_station(point_wkt: str, date_range: str, file=None,
-                                           crs=4326) -> MetStation | str:
+async def get_nearest_full_weather_station(point_wkt: str, date_range: str, crs=4326,
+                                           output: str = 'python') -> MetStation | str:
     """
     Returns a **list** or **.CSV** containing the hourly precipitation measured by the weather station closed to the
     input point with complete precipitation data.
     """
     date_range = DateRange(date_range)
     point = GeoSeries.from_wkt([point_wkt], crs=crs).to_crs(4326)
-    station_precipitation = get_weather_stations(point, date_range)
-    if station_precipitation is None:
-        return 'No MET station was found that has measured relevant data to your query. Try another location or date range!'
-
-    if file:
-        print(len(date_range.unix_list))
+    station_precipitation = get_processed_station_observations(point, date_range)
+    station_precipitation['geometry_origin'] = point_wkt
+    if station_precipitation.empty:
+        raise HTTPException(status_code=204,
+                            detail=f"No MET station was found that is close to the given point. Try another location!")
+    if output == 'python':
+        station_precipitation['geometry'] = station_precipitation['geometry'].apply(lambda x: x.wkt)
+        return MetStation.parse_obj(station_precipitation.iloc[0])
+    elif output == 'geojson':
+        return Response(content=gpd(station_precipitation[station_precipitation.index == 0], geometry=station_precipitation['geometry'],
+                                    crs=crs).to_json(), media_type="application/json")
+    elif output == 'file':
         data = pd.DataFrame(
-            {'timestamp': date_range.unix_list,
-             'precipitation': station_precipitation['value_list'],
-             })
+            {'timestamp': date_range.unix_list, 'precipitation': station_precipitation['precipitation']})
         stream = io.StringIO()
         data.to_csv(stream, index=False)
-        response = StreamingResponse(iter([stream.getvalue()]),
-                                     media_type="text/csv"
-                                     )
+        response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
         response.headers["Content-Disposition"] = f"attachment; filename={station_precipitation.name}.csv"
         return response
+    raise HTTPException(status_code=400, detail=f"Export variable: '{output}' not recognized")
 
-    else:
-        return station_precipitation
+
+@app.get("/MET/polygon/all", tags=['MET.NO'])
+def get_all_weather_station(polygon_wkt: str, date_range: str, crs=4326, output: str = 'python') -> list[MetStation] | str:
+    """
+    Get all weather stations within the input polygon.
+    """
+    date_range = DateRange(date_range)
+    polygon = GeoSeries.from_wkt([polygon_wkt], crs=crs).to_crs(4326)
+    stations = get_station_within_polygon(polygon, date_range)
+    stations['geometry_origin'] = polygon_wkt
+    if stations.empty:
+        raise HTTPException(status_code=204,
+                            detail=f"No MET station was found that is close to the given point. Try another location!")
+    if output == 'python':
+        stations['geometry'] = stations['geometry'].apply(lambda x: x.wkt)
+        return [MetStation.parse_obj(i) for _, i in stations.iterrows()]
+    elif output == 'geojson':
+        return Response(content=gpd(stations, geometry=stations['geometry'],
+                                    crs=crs).to_json(), media_type="application/json")
+    elif output == 'file':
+        data = pd.DataFrame(
+            {'timestamp': date_range.unix_list, 'precipitation': stations['precipitation']})
+        stream = io.StringIO()
+        data.to_csv(stream, index=False)
+        response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
+        response.headers["Content-Disposition"] = f"attachment; filename={stations.name}.csv"
+        return response
+    raise HTTPException(status_code=400, detail=f"Export variable: '{output}' not recognized")
+
+
+# 2020-02-01/2020-02-02
+# POLYGON((5 60, 6 60, 6 61, 5 61, 5 60))
+@app.get("/MET/polygon/precipitation", tags=['MET.NO'])
+def get_all_weather_station_precipitation(polygon_wkt: str, date_range: str, crs=4326, output: str = 'python') -> list[MetStation] | str:
+    """
+    Returns a list of the hourly precipitation of all weather stations within the input polygon with full precipitation.
+    """
+    date_range = DateRange(date_range)
+    polygon = GeoSeries.from_wkt([polygon_wkt], crs=crs).to_crs(4326)
+    station_precipitation = get_processed_station_observations_poly(polygon, date_range)
+    station_precipitation['geometry_origin'] = polygon_wkt
+    if station_precipitation.empty:
+        raise HTTPException(status_code=204,
+                            detail=f"No MET station was found that is close to the given point. Try another location!")
+    if output == 'python':
+        station_precipitation['geometry'] = station_precipitation['geometry'].apply(lambda x: x.wkt)
+        return [MetStation.parse_obj(i) for _, i in station_precipitation.iterrows()]
+    elif output == 'geojson':
+        return Response(content=gpd(station_precipitation, geometry=station_precipitation['geometry'],
+                                    crs=crs).to_json(), media_type="application/json")
+    elif output == 'file':
+        data = pd.DataFrame(
+            {'timestamp': date_range.unix_list, 'precipitation': station_precipitation['precipitation']})
+        stream = io.StringIO()
+        data.to_csv(stream, index=False)
+        response = StreamingResponse(iter([stream.getvalue()]), media_type="text/csv")
+        response.headers["Content-Disposition"] = f"attachment; filename={station_precipitation.name}.csv"
+        return response
+    raise HTTPException(status_code=400, detail=f"Export variable: '{output}' not recognized")
+
+
+@app.get("/MET/forecast", tags=['MET.NO'])
+def get_forecast_from_shape(shape_wkt: str, crs=4326) -> list[list[list[int | float]]]:
+    """
+    Returns a list containing the forecasted precipitation of the input shape.
+    """
+    pointer = geopandas.GeoDataFrame(geometry=[shapely.wkt.loads(shape_wkt)], crs=crs).to_crs(4326)
+    forecast = get_forecast(pointer)
+    return forecast
 
 
 @app.get("/IMERG/point/precipitation", tags=['IMERG'])
@@ -206,39 +290,6 @@ async def get_imerg_precipitation_from_point(point_wkt: str, date_range: str, fi
         return results
 
 
-@app.get("/MET/polygon/all", tags=['MET.NO'])
-def get_all_weather_station(polygon_wkt: str, date_range: str, crs=4326) -> list[MetStation]:
-    """
-    Get all weather stations within the input polygon.
-    """
-    date_range = DateRange(date_range)
-    polygon = GeoSeries.from_wkt([polygon_wkt], crs=crs).to_crs(4326)
-    stations = get_station_within_polygon(polygon, date_range)
-    return stations
-
-
-@app.get("/MET/polygon/precipitation", tags=['MET.NO'])
-def get_all_weather_station_precipitation(polygon_wkt: str, date_range: str, crs=4326) -> list[dict]:
-    """
-    Returns a list of the hourly precipitation of all weather stations within the input polygon with full precipitation.
-    """
-    date_range = DateRange(date_range)
-    polygon = GeoSeries.from_wkt([polygon_wkt], crs=crs).to_crs(4326)
-    stations = get_station_within_polygon(polygon, date_range)
-    observations = get_station_observations(','.join(str(station['id']) for station in stations),
-                                            date_range)
-    closest_stations_with_full_result_range = get_stations_with_full_observations(stations, observations, date_range)
-    if len(closest_stations_with_full_result_range) > 0:
-        stations_with_full_result_range = [{'id': i['id'], 'name': i['name'], 'coords': i['geometry']['coordinates'],
-                                            'value_list': [x['observations'][0]['value'] for x in observations if
-                                                           x['sourceId'].split(':')[0] ==
-                                                           i['id']]} for i in closest_stations_with_full_result_range]
-    else:
-        stations_with_full_result_range = {'id': [], 'name': [], 'coords': [], 'distance': [], 'value_list': []}
-
-    return stations_with_full_result_range
-
-
 @app.get("/IMERG/polygon/precipitation", tags=['IMERG'])
 def get_imerg_precipitation_from_polygon(polygon_wkt: str, date_range: str, crs=4326) -> list[dict]:
     """
@@ -263,7 +314,7 @@ def get_closest_culvert_data(point_wkt: str, date_range: str, crs=4326) -> list[
     date_range = DateRange(date_range)
     pointer = geopandas.GeoDataFrame(geometry=[shapely.wkt.loads(point_wkt)], crs=crs).to_crs(4326)
 
-    url = f'https://c/api/v1/Stations?Active=1'
+    url = f'https://hydapi.nve.no/api/v1/Stations?Active=1'
     request_headers = {
         "Accept": "application/json",
         "X-API-Key": "JkbAM/hEkk+5Z7mJIlC3fQ==",
@@ -353,17 +404,6 @@ def get_water_level_from_id(pipelife_ids: str, date_range: str) -> list[Any]:
         *[x.get_culverts_from_id_list(pipelife_ids.split(','), date_range) for x in pipelifeusers]))
     all_pipes_data = [[culvert._location_id, culvert.get_hourly_data()] for culvert in selected_culverts]
     return all_pipes_data
-
-
-@app.get("/MET/point/forecast", tags=['MET.NO'])
-def get_forecast_from_point(point_wkt: str, crs=4326) -> list[Any]:
-    """
-    Returns a list containing the forecasted precipitation of the input point.
-    """
-    pointer = geopandas.GeoDataFrame(geometry=[shapely.wkt.loads(point_wkt)], crs=crs).to_crs(4326)
-
-    forecast = get_forecast(pointer)
-    return forecast
 
 
 @app.get("/Misc/check_all_datasets", tags=['Misc'])
