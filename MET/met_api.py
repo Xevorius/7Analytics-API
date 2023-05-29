@@ -26,6 +26,7 @@ def get_station_observations(ids: str, date_range: DateRange) \
     :param date_range: The date range of which the user wants the historic precipitation.
     :return: returns a list of dictionaries, where a dictionary contains a historic precipitation observation.
     """
+    print(ids)
     parameters = {
         'sources': [ids],
         'elements': 'sum(precipitation_amount PT1H)',
@@ -34,6 +35,7 @@ def get_station_observations(ids: str, date_range: DateRange) \
     }
     try:
         r = requests.get(frost_observation_endpoint, parameters, auth=(secrets['MET_FROST_CLIENT_ID'], ''))
+        print(r)
         if r.status_code == 200:
             response = r.json()
             df = pd.json_normalize(response['data'])
@@ -116,7 +118,6 @@ def get_processed_station_observations_poly(point: Series, date_range: DateRange
     observations = get_station_observations(",".join(possible_stations_of_feature.id), date_range)
     closest_stations_with_full_result_range = pd.merge(possible_stations_of_feature, observations, on=["id"])
     return closest_stations_with_full_result_range
-
 
 
 def get_station_within_polygon(polygon: Series, date_range: DateRange) -> DataFrame:

@@ -17,6 +17,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse, Response
 from dotenv import dotenv_values
 from MET.forecast_api import get_forecast
+from NVE.nve_api import get_nearest_station_obesrvation
 from PipeLife.culvert import PipeLifeUser
 from Schemas.schemas_met import MetStation
 from date_range import DateRange
@@ -69,6 +70,23 @@ options = {'vfs.s3.aws_access_key_id': secrets['AMAZON_S3_AWS_ACCESS_KEY_ID'],
 
 context = tiledb.Config(options)
 
+pipelife_users = [{'TCN_CLIENT_ID': secrets['PIPELIFE_PIPELIFE_CLIENT_ID'],
+                   'TCN_CLIENT_SECRET': secrets['PIPELIFE_PIPELIFE_SECRET'],
+                   'TCN_MYUSER': secrets['PIPELIFE_PIPELIFE_USER'],
+                   'TCN_MYPASS': secrets['PIPELIFE_PIPELIFE_PASSWORD']},
+                  {'TCN_CLIENT_ID': secrets['PIPELIFE_BANENOR_CLIENT_ID'],
+                   'TCN_CLIENT_SECRET': secrets['PIPELIFE_BANENOR_SECRET'],
+                   'TCN_MYUSER': secrets['PIPELIFE_BANENOR_USER'],
+                   'TCN_MYPASS': secrets['PIPELIFE_BANENOR_PASSWORD']},
+                  {'TCN_CLIENT_ID': secrets['PIPELIFE_KRISTIANSAND_CLIENT_ID'],
+                   'TCN_CLIENT_SECRET': secrets['PIPELIFE_KRISTIANSAND_SECRET'],
+                   'TCN_MYUSER': secrets['PIPELIFE_KRISTIANSAND_USER'],
+                   'TCN_MYPASS': secrets['PIPELIFE_KRISTIANSAND_PASSWORD']},
+                  {'TCN_CLIENT_ID': secrets['PIPELIFE_svv_CLIENT_ID'],
+                   'TCN_CLIENT_SECRET': secrets['PIPELIFE_svv_SECRET'],
+                   'TCN_MYUSER': secrets['PIPELIFE_svv_USER'],
+                   'TCN_MYPASS': secrets['PIPELIFE_svv_PASSWORD']}]
+
 """
 Uncomment the following to line if you intend to use the IMERG interface. Keep in mind that it will take a considerable
 amount of time to load these variables.
@@ -78,10 +96,8 @@ amount of time to load these variables.
 #                          storage_options=options, attribute='precipitationCal')
 
 """
-Uncomment the following line if you want to monitoring the Dask calculations though a  Dask diagnostics panel.
+Uncomment the following line if you want to monitoring the Dask calculations though a Dask diagnostics panel.
 """
-
-
 # client = Client("tcp://127.0.0.1:63883")
 
 
@@ -313,33 +329,9 @@ def get_closest_culvert_data(point_wkt: str, date_range: str, crs=4326) -> list[
     """
     date_range = DateRange(date_range)
     pointer = geopandas.GeoDataFrame(geometry=[shapely.wkt.loads(point_wkt)], crs=crs).to_crs(4326)
+    get_nearest_station_obesrvation(pointer, date_range)
 
-    url = f'https://hydapi.nve.no/api/v1/Stations?Active=1'
-    request_headers = {
-        "Accept": "application/json",
-        "X-API-Key": "JkbAM/hEkk+5Z7mJIlC3fQ==",
-    }
-    nve_stations = requests.get(url, headers=request_headers)
-    parsed_result = nve_stations.json()
-    df = pd.json_normalize(parsed_result['data'])
-    df['parameters'] = [[x['parameter'] for x in i] for i in df.seriesList]
-    dff = df[df['parameters'].apply(lambda x: 1000 in x or 1001 in x)]
-    dff['seriesList'] = [[x for x in i if x['parameter'] == 1000 or x['parameter'] == 1001] for i in dff.seriesList]
-    dff['dateRange'] = [[[DateRange(f"{y['dataFromTime'][:10]}/{y['dataToTime'][:10]}") for y in x['resolutionList'] if
-                          y['resTime'] == 60] for x in i] for i in dff.seriesList]
-    dfff = dff[dff['dateRange'].apply(lambda x: bool(list(filter(None, x))))]
-    gdf = geopandas.GeoDataFrame(
-        dfff[["stationId", "stationName", "latitude", "longitude", "seriesList"]],
-        geometry=geopandas.points_from_xy(dfff.longitude, dfff.latitude), crs=4326)
-    culvert = pointer.sjoin_nearest(gdf).merge(gdf, left_on="index_right", right_index=True)
-    culvert_id = culvert.iloc[0]['stationId_x']
-    url = f"https://hydapi.nve.no/api/v1/Observations?StationId={culvert_id}&Parameter=1000,1001&ResolutionTime=60&ReferenceTime={date_range}"
-    request_headers = {
-        "Accept": "application/json",
-        "X-API-Key": "JkbAM/hEkk+5Z7mJIlC3fQ==",
-    }
-    nve_stations = requests.get(url, headers=request_headers)
-    return [nve_stations.json()['data'][0]['parameterNameEng'], nve_stations.json()['data'][0]['observations']]
+    return ['hoi']
 
 
 @app.get("/NVE/polygon/flow", tags=['NVE'])
@@ -388,21 +380,25 @@ def get_water_level_from_id(pipelife_ids: str, date_range: str) -> list[Any]:
     """
     date_range = DateRange(date_range)
 
-    pipelife_users = [{'TCN_CLIENT_ID': secrets['PIPELIFE_PIPELIFE_CLIENT_ID'],
-                       'TCN_CLIENT_SECRET': secrets['PIPELIFE_PIPELIFE_SECRET'],
-                       'TCN_MYUSER': secrets['PIPELIFE_PIPELIFE_USER'],
-                       'TCN_MYPASS': secrets['PIPELIFE_PIPELIFE_PASSWORD']},
-                      {'TCN_CLIENT_ID': secrets['PIPELIFE_BANENOR_CLIENT_ID'],
-                       'TCN_CLIENT_SECRET': secrets['PIPELIFE_BANENOR_SECRET'],
-                       'TCN_MYUSER': secrets['PIPELIFE_BANENOR_USER'],
-                       'TCN_MYPASS': secrets['PIPELIFE_BANENOR_PASSWORD']}]
-
     pipelifeusers = [PipeLifeUser(client_id=user['TCN_CLIENT_ID'], client_secret=user['TCN_CLIENT_SECRET'],
                                   client_username=user['TCN_MYUSER'], password=user['TCN_MYPASS']) for user in
                      pipelife_users]
     selected_culverts = list(itertools.chain(
         *[x.get_culverts_from_id_list(pipelife_ids.split(','), date_range) for x in pipelifeusers]))
     all_pipes_data = [[culvert._location_id, culvert.get_hourly_data()] for culvert in selected_culverts]
+    return all_pipes_data
+
+@app.get("/PipeLife/id/tags", tags=['PipeLife'])
+def get_tags_from_id(pipelife_ids: str, date_range: str) -> list[Any]:
+    """
+    Returns a list containing hourly water level data of the input culvert.
+    """
+    pipelifeusers = [PipeLifeUser(client_id=user['TCN_CLIENT_ID'], client_secret=user['TCN_CLIENT_SECRET'],
+                                  client_username=user['TCN_MYUSER'], password=user['TCN_MYPASS']) for user in
+                     pipelife_users]
+    selected_culverts = list(itertools.chain(
+        *[x.get_culverts_from_id_list(pipelife_ids.split(','), date_range) for x in pipelifeusers]))
+    all_pipes_data = [culvert.get_tags_from_id() for culvert in selected_culverts]
     return all_pipes_data
 
 

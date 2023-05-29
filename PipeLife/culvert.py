@@ -9,6 +9,7 @@ __status__ = "Development"
 # local imports:
 from abc import ABC, abstractmethod
 from datetime import datetime
+from typing import List, Any
 
 # third-party imports:
 import pandas as pd
@@ -107,6 +108,19 @@ class PipeLifeCulvert(Culvert):
             else:
                 df_list.append(df.values.tolist())
         return df_list
+
+    def get_tags_from_id(self) -> list[object]:
+        """
+        Request all logged values and timestamps available for this location within the inputted dates.
+
+        :param start_time: Integer representing the start date in Unix time.
+        :param end_time: Integer representing an end date in Unix time.
+        :return: Dataframe containing timestamps and values gathered between the given dates.
+        """
+        api_endpoint = f'https://www.telecontrolnet.nl/api/v1/locations/{self._location_id}/tags'
+        values_request = requests.get(api_endpoint,{'access_token': self._access_token})
+        response = values_request.json()
+        return response
 
     def _update_has_image(self, df: pd.DataFrame, image_timestamps: list[tuple[int, str]]) -> pd.DataFrame:
         """
