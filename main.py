@@ -98,6 +98,8 @@ amount of time to load these variables.
 """
 Uncomment the following line if you want to monitoring the Dask calculations though a Dask diagnostics panel.
 """
+
+
 # client = Client("tcp://127.0.0.1:63883")
 
 
@@ -158,7 +160,8 @@ async def get_nearest_full_weather_station(point_wkt: str, date_range: str, crs=
         station_precipitation['geometry'] = station_precipitation['geometry'].apply(lambda x: x.wkt)
         return MetStation.parse_obj(station_precipitation.iloc[0])
     elif output == 'geojson':
-        return Response(content=gpd(station_precipitation[station_precipitation.index == 0], geometry=station_precipitation['geometry'],
+        return Response(content=gpd(station_precipitation[station_precipitation.index == 0],
+                                    geometry=station_precipitation['geometry'],
                                     crs=crs).to_json(), media_type="application/json")
     elif output == 'file':
         data = pd.DataFrame(
@@ -172,7 +175,8 @@ async def get_nearest_full_weather_station(point_wkt: str, date_range: str, crs=
 
 
 @app.get("/MET/polygon/all", tags=['MET.NO'])
-def get_all_weather_station(polygon_wkt: str, date_range: str, crs=4326, output: str = 'python') -> list[MetStation] | str:
+def get_all_weather_station(polygon_wkt: str, date_range: str, crs=4326, output: str = 'python') -> list[
+                                                                                                        MetStation] | str:
     """
     Get all weather stations within the input polygon.
     """
@@ -203,7 +207,8 @@ def get_all_weather_station(polygon_wkt: str, date_range: str, crs=4326, output:
 # 2020-02-01/2020-02-02
 # POLYGON((5 60, 6 60, 6 61, 5 61, 5 60))
 @app.get("/MET/polygon/precipitation", tags=['MET.NO'])
-def get_all_weather_station_precipitation(polygon_wkt: str, date_range: str, crs=4326, output: str = 'python') -> list[MetStation] | str:
+def get_all_weather_station_precipitation(polygon_wkt: str, date_range: str, crs=4326, output: str = 'python') -> list[
+                                                                                                                      MetStation] | str:
     """
     Returns a list of the hourly precipitation of all weather stations within the input polygon with full precipitation.
     """
@@ -380,24 +385,27 @@ def get_water_level_from_id(pipelife_ids: str, date_range: str) -> list[Any]:
     """
     date_range = DateRange(date_range)
 
-    pipelifeusers = [PipeLifeUser(client_id=user['TCN_CLIENT_ID'], client_secret=user['TCN_CLIENT_SECRET'],
-                                  client_username=user['TCN_MYUSER'], password=user['TCN_MYPASS']) for user in
-                     pipelife_users]
+    pipelife_users_list = [PipeLifeUser(client_id=user['TCN_CLIENT_ID'], client_secret=user['TCN_CLIENT_SECRET'],
+                                        client_username=user['TCN_MYUSER'], password=user['TCN_MYPASS']) for user in
+                           pipelife_users]
     selected_culverts = list(itertools.chain(
-        *[x.get_culverts_from_id_list(pipelife_ids.split(','), date_range) for x in pipelifeusers]))
-    all_pipes_data = [[culvert._location_id, culvert.get_hourly_data()] for culvert in selected_culverts]
+        *[x.get_culverts_from_id_list(pipelife_ids.split(',')) for x in pipelife_users_list]))
+    print(selected_culverts)
+    all_pipes_data = [[culvert._location_id, culvert.get_hourly_data(date_range)] for culvert in selected_culverts]
     return all_pipes_data
 
+
 @app.get("/PipeLife/id/tags", tags=['PipeLife'])
-def get_tags_from_id(pipelife_ids: str, date_range: str) -> list[Any]:
+def get_tags_from_id(pipelife_ids: str) -> list[Any]:
     """
     Returns a list containing hourly water level data of the input culvert.
     """
-    pipelifeusers = [PipeLifeUser(client_id=user['TCN_CLIENT_ID'], client_secret=user['TCN_CLIENT_SECRET'],
-                                  client_username=user['TCN_MYUSER'], password=user['TCN_MYPASS']) for user in
-                     pipelife_users]
+    pipelife_users_list = [PipeLifeUser(client_id=user['TCN_CLIENT_ID'], client_secret=user['TCN_CLIENT_SECRET'],
+                                        client_username=user['TCN_MYUSER'], password=user['TCN_MYPASS']) for user in
+                           pipelife_users]
     selected_culverts = list(itertools.chain(
-        *[x.get_culverts_from_id_list(pipelife_ids.split(','), date_range) for x in pipelifeusers]))
+        *[x.get_culverts_from_id_list(pipelife_ids.split(',')) for x in pipelife_users_list]))
+    print(selected_culverts)
     all_pipes_data = [culvert.get_tags_from_id() for culvert in selected_culverts]
     return all_pipes_data
 
