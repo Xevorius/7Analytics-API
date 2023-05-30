@@ -1,7 +1,7 @@
 import io
 import itertools
 import time
-from typing import Any, List
+from typing import Any, List, Tuple
 import geopandas
 import pandas as pd
 import requests
@@ -11,13 +11,15 @@ from fastapi import FastAPI, HTTPException
 from geopandas import GeoSeries
 from geopandas import GeoDataFrame as gpd
 import numpy as np
+from numpy import ndarray
+from pandas import DataFrame
 from pyogrio import read_dataframe
 from sqlalchemy import create_engine
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse, Response
 from dotenv import dotenv_values
 from MET.forecast_api import get_forecast
-from NVE.nve_api import get_nearest_station_obesrvation
+from NVE.nve_api import get_nearest_station_obesrvation, get_idf_from_raster, get_idf_curve_from_nearest_station
 from PipeLife.culvert import PipeLifeUser
 from Schemas.schemas_met import MetStation
 from date_range import DateRange
@@ -376,6 +378,32 @@ def get_all_culvert_data_within_polygon(polygon_wkt: str, date_range: str, crs=4
     # }
     # nve_stations = requests.get(url, headers=request_headers)
     return gdf
+
+
+@app.get("/NVE/point/idf_from_raster", tags=['NVE'])
+def get_raster_idf_from_point(point_wkt: str, crs: int = 4326) -> Response:
+    """
+    Returns hourly water level and/or water flow (depending on what is available) of the closest culvert to the input
+    point.
+    """
+
+    pointer = GeoSeries.from_wkt([point_wkt], crs=crs).to_crs(4326)
+    idf = get_idf_from_raster(pointer)
+
+    return Response(content=idf, media_type="application/json")
+
+
+@app.get("/NVE/point/idf_from_station", tags=['NVE'])
+def get_idf_from_point(point_wkt: str, crs: int = 4326) -> Response:
+    """
+    Returns hourly water level and/or water flow (depending on what is available) of the closest culvert to the input
+    point.
+    """
+
+    pointer = GeoSeries.from_wkt([point_wkt], crs=crs).to_crs(4326)
+    idf = get_idf_curve_from_nearest_station(pointer)
+
+    return Response(content=idf, media_type="application/json")
 
 
 @app.get("/PipeLife/id/waterlevel", tags=['PipeLife'])
