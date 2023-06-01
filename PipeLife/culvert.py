@@ -26,7 +26,7 @@ class CulvertResults(BaseModel):
     id: str
     timestamp: list[int]
     values: list[float]
-    images: list[dict[str, str | int]]
+    images: list[dict[str, str | int]] | None
 
 
 class Culvert(ABC):
@@ -128,22 +128,6 @@ class PipeLifeCulvert(Culvert):
         response = values_request.json()
         return response
 
-    def _update_has_image(self, df: pd.DataFrame, image_timestamps: list[tuple[int, str]]) -> pd.DataFrame:
-        """
-        Static methid that compares the timestamps of the measured values of the culverts with the image timestamps and
-        update the has_image field if they match.
-
-        :param df: Pandas DataFrame containing the Culvert values
-        :param image_timestamps: List containing the Image timestamps
-        :return: Pandas DataFrame containing the update has)image values
-        """
-        for index, row in df.iterrows():
-            for i in image_timestamps:
-                if int(str(row['logtime@uts'])[:-5]) == int(str(i[0])[:-2]):
-                    df.at[
-                        index, 'has_image'] = f'https://www.telecontrolnet.nl/api/v1/locations/32313138-30/files/{i[1]}?contents=1&access_token={self._access_token}'
-        return df
-
     def get_images_list(self, date_range: DateRange) -> list[dict[str, str | int]] | None:
         """
         Post requests all the timestamps where the Pipelife API has made images of the culvert.
@@ -176,8 +160,7 @@ class PipeLifeCulvert(Culvert):
                     dir = i['id']
             return self._get_image_url(dir, response)
 
-    @staticmethod
-    def _get_image_url(dir: str, image_list: list[dict]) -> list[dict[str, str | int]]:
+    def _get_image_url(self, dir: str, image_list: list[dict]) -> list[dict[str, str | int]]:
         """
         Try to decipher the url to the requested image. This process will be streamlined by PipeLife in the future.
         Currently, we have to construct the url by adding the timestamp of the supposed image to a string. This has
@@ -191,11 +174,11 @@ class PipeLifeCulvert(Culvert):
         for i in image_list:
             stamp = datetime.fromtimestamp(int(i['logtime@uts']))
             datelist = list(str(stamp.astimezone(pytz.utc)))
-            url = dir + f'-2f3{datelist[0]}-3{datelist[1]}3{datelist[2]}-3{datelist[3]}2f3{datelist[5]}3{datelist[6]}2f62-6c6f-625f-3' \
+            dir = dir + f'-2f3{datelist[0]}-3{datelist[1]}3{datelist[2]}-3{datelist[3]}2f3{datelist[5]}3{datelist[6]}2f62-6c6f-625f-3' \
                         f'{datelist[0]}3{datelist[1]}-3{datelist[2]}3{datelist[3]}-2d3{datelist[5]}-3{datelist[6]}' \
                         f'2d-3{datelist[8]}3{datelist[9]}-2d3{datelist[11]}-3{datelist[12]}3{datelist[14]}-3{datelist[15]}' \
                         f'3{datelist[17]}-3{datelist[18]}2e-6a70-6567'
-            image_urls.append({'timestamp':int(i['logtime@uts']), 'url': url})
+            image_urls.append({'timestamp':int(i['logtime@uts']), 'url': f'https://www.telecontrolnet.nl/api/v1/locations/32313138-30/files/{dir}?contents=1&access_token={self._access_token}'})
         return image_urls
 
 
