@@ -1,7 +1,7 @@
 import io
 import itertools
 import time
-from typing import Any, List, Tuple
+from typing import Any, List
 import geopandas
 import pandas as pd
 import requests
@@ -11,20 +11,17 @@ from fastapi import FastAPI, HTTPException
 from geopandas import GeoSeries
 from geopandas import GeoDataFrame as gpd
 import numpy as np
-from numpy import ndarray
-from pandas import DataFrame
 from pyogrio import read_dataframe
 from sqlalchemy import create_engine
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse, Response
 from dotenv import dotenv_values
 from MET.forecast_api import get_forecast
-from NVE.nve_api import get_nearest_station_obesrvation, get_idf_from_raster, get_idf_curve_from_nearest_station
-from PipeLife.culvert import PipeLifeUser
+from PipeLife.culvert import PipeLifeUser, CulvertResults
 from Schemas.schemas_met import MetStation
 from date_range import DateRange
 from MET.met_api import get_nearest_stations_to_point, get_station_within_polygon, get_processed_station_observations, \
-    get_processed_station_observations_poly
+    get_processed_station_observations_poly, get_idf_curve_from_nearest_station, get_idf_from_raster
 
 secrets = dotenv_values('.env')
 
@@ -249,7 +246,8 @@ def get_forecast_from_shape(shape_wkt: str, crs=4326) -> list[list[list[int | fl
 
 
 @app.get("/IMERG/point/precipitation", tags=['IMERG'])
-async def get_imerg_precipitation_from_point(point_wkt: str, date_range: str, file=False, crs=4326, dask=False):
+async def get_imerg_precipitation_from_point(point_wkt: str, date_range: str, file: bool = False, crs: int = 4326,
+                                             dask: bool = False):
     """
     Access the full historical IMERG precipitation (2000-06-01/2021-09-31). Keep in mind that this dataset is not fully
     optimized yet. Thus, the more data you request the longer your request will take.
@@ -336,51 +334,59 @@ def get_closest_culvert_data(point_wkt: str, date_range: str, crs=4326) -> list[
     """
     date_range = DateRange(date_range)
     pointer = geopandas.GeoDataFrame(geometry=[shapely.wkt.loads(point_wkt)], crs=crs).to_crs(4326)
-    get_nearest_station_obesrvation(pointer, date_range)
-
-    return ['hoi']
+    df = get_nearest_station_obesrvation(pointer, date_range)
+    return Response(content=df.to_json(), media_type="application/json")
 
 
 @app.get("/NVE/polygon/flow", tags=['NVE'])
 def get_all_culvert_data_within_polygon(polygon_wkt: str, date_range: str, crs=4326) -> list[Any]:
     """
-     Returns hourly water level and/or water flow (depending on what is available) of the closest culvert to the input
-     point.
+     Should return hourly water level and/or water flow (depending on what is available) of the culverts within a given
+     polygon. But the NVE API reaches an undocumented error. Even with their own example.
      """
-    date_range = DateRange(date_range)
-    pointer = geopandas.GeoDataFrame(geometry=[shapely.wkt.loads(polygon_wkt)], crs=crs).to_crs(4326)
-
-    url = f'https://c/api/v1/Stations?Active=1&Polygon={polygon_wkt}'
-    request_headers = {
-        "Accept": "application/json",
-        "X-API-Key": "JkbAM/hEkk+5Z7mJIlC3fQ==",
-    }
-    nve_stations = requests.get(url, headers=request_headers)
-    parsed_result = nve_stations.json()
-    df = pd.json_normalize(parsed_result['data'])
-    print(df)
-    df['parameters'] = [[x['parameter'] for x in i] for i in df.seriesList]
-    dff = df[df['parameters'].apply(lambda x: 1000 in x or 1001 in x)]
-    dff['seriesList'] = [[x for x in i if x['parameter'] == 1000 or x['parameter'] == 1001] for i in dff.seriesList]
-    dff['dateRange'] = [[[DateRange(f"{y['dataFromTime'][:10]}/{y['dataToTime'][:10]}") for y in x['resolutionList'] if
-                          y['resTime'] == 60] for x in i] for i in dff.seriesList]
-    dfff = dff[dff['dateRange'].apply(lambda x: bool(list(filter(None, x))))]
-    gdf = geopandas.GeoDataFrame(
-        dfff[["stationId", "stationName", "latitude", "longitude", "seriesList"]],
-        geometry=geopandas.points_from_xy(dfff.longitude, dfff.latitude), crs=4326)
-    print(gdf)
-    # culvert = pointer.sjoin_nearest(gdf).merge(gdf, left_on="index_right", right_index=True)
-    # culvert_id = culvert.iloc[0]['stationId_x']
-    # url = f"https://hydapi.nve.no/api/v1/Observations?StationId={culvert_id}&Parameter=1000,1001&ResolutionTime=60&ReferenceTime={date_range}"
+    # date_range = DateRange(date_range)
+    # pointer = geopandas.GeoDataFrame(geometry=[shapely.wkt.loads(polygon_wkt)], crs=crs).to_crs(4326)
+    #
+    # url = f'https://hydapi.nve.no/api/v1/Stations?Active=1&Polygon={polygon_wkt}'
     # request_headers = {
     #     "Accept": "application/json",
     #     "X-API-Key": "JkbAM/hEkk+5Z7mJIlC3fQ==",
     # }
     # nve_stations = requests.get(url, headers=request_headers)
-    return gdf
+    # print(nve_stations)
+    # parsed_result = nve_stations.json()
+    # df = pd.json_normalize(parsed_result['data'])
+    # print(df)
+    # df['parameters'] = [[x['parameter'] for x in i] for i in df.seriesList]
+    # dff = df[df['parameters'].apply(lambda x: 1000 in x or 1001 in x)]
+    # dff['seriesList'] = [[x for x in i if x['parameter'] == 1000 or x['parameter'] == 1001] for i in dff.seriesList]
+    # dff['dateRange'] = [[[DateRange(f"{y['dataFromTime'][:10]}/{y['dataToTime'][:10]}") for y in x['resolutionList'] if
+    #                       y['resTime'] == 60] for x in i] for i in dff.seriesList]
+    # dfff = dff[dff['dateRange'].apply(lambda x: bool(list(filter(None, x))))]
+    # gdf = geopandas.GeoDataFrame(
+    #     dfff[["stationId", "stationName", "latitude", "longitude", "seriesList"]],
+    #     geometry=geopandas.points_from_xy(dfff.longitude, dfff.latitude), crs=4326)
+    # print(gdf)
+    # culvert = pointer.sjoin_nearest(gdf).merge(gdf, left_on="index_right", right_index=True)
+    # culvert_id = culvert.iloc[0]['stationId_x']
+    # parameters = {
+    #     'StationId': culvert_id,
+    #     'Parameter': '1000,1001',
+    #     'ResolutionTime': 60,
+    #     'ReferenceTime': date_range
+    # }
+    # url = f"https://hydapi.nve.no/api/v1/Observations"
+    # request_headers = {
+    #     "Accept": "application/json",
+    #     "X-API-Key": "JkbAM/hEkk+5Z7mJIlC3fQ==",
+    # }
+    # nve_stations = requests.get(url, parameters, headers=request_headers)
+    # df = pd.json_normalize(nve_stations['data'], max_level=0)
+    # print(df)
+    return "The NVE API hasn't implemented this feature correctly..."
 
 
-@app.get("/NVE/point/idf_from_raster", tags=['NVE'])
+@app.get("/MET/point/idf_from_raster", tags=['MET.NO'])
 def get_raster_idf_from_point(point_wkt: str, crs: int = 4326) -> Response:
     """
     Returns hourly water level and/or water flow (depending on what is available) of the closest culvert to the input
@@ -393,7 +399,7 @@ def get_raster_idf_from_point(point_wkt: str, crs: int = 4326) -> Response:
     return Response(content=idf, media_type="application/json")
 
 
-@app.get("/NVE/point/idf_from_station", tags=['NVE'])
+@app.get("/MET/point/idf_from_station", tags=['MET.NO'])
 def get_idf_from_point(point_wkt: str, crs: int = 4326) -> Response:
     """
     Returns hourly water level and/or water flow (depending on what is available) of the closest culvert to the input
@@ -407,34 +413,60 @@ def get_idf_from_point(point_wkt: str, crs: int = 4326) -> Response:
 
 
 @app.get("/PipeLife/id/waterlevel", tags=['PipeLife'])
-def get_water_level_from_id(pipelife_ids: str, date_range: str) -> list[Any]:
+def get_water_level_from_id(pipelife_ids: str, date_range: str, pipelife_user: str | None = None) -> list[list[
+    CulvertResults]] | list[Any]:
     """
     Returns a list containing hourly water level data of the input culvert.
     """
     date_range = DateRange(date_range)
-
-    pipelife_users_list = [PipeLifeUser(client_id=user['TCN_CLIENT_ID'], client_secret=user['TCN_CLIENT_SECRET'],
-                                        client_username=user['TCN_MYUSER'], password=user['TCN_MYPASS']) for user in
-                           pipelife_users]
-    selected_culverts = list(itertools.chain(
-        *[x.get_culverts_from_id_list(pipelife_ids.split(',')) for x in pipelife_users_list]))
-    print(selected_culverts)
-    all_pipes_data = [[culvert._location_id, culvert.get_hourly_data(date_range)] for culvert in selected_culverts]
-    return all_pipes_data
+    if pipelife_user:
+        user = [i for i in pipelife_users if i['TCN_MYUSER'] == pipelife_user]
+        if not user:
+            raise HTTPException(status_code=400, detail=f'Pipelife User: "{pipelife_user}", is not recognized.')
+        pipe_life_user = PipeLifeUser(client_id=user[0]['TCN_CLIENT_ID'], client_secret=user[0]['TCN_CLIENT_SECRET'],
+                                      client_username=user[0]['TCN_MYUSER'], password=user[0]['TCN_MYPASS'])
+        selected_culverts = pipe_life_user.get_culverts_from_id_list(pipelife_ids.split(','))
+        if not selected_culverts:
+            raise HTTPException(status_code=400, detail=f'Pipelife id(s) do not belong to {pipelife_user}')
+        all_pipes_data = [culvert.get_hourly_data(date_range) for culvert in selected_culverts]
+        if not all_pipes_data:
+            raise HTTPException(status_code=400, detail=f'No Data found for date and culvert combination.')
+        return all_pipes_data
+    else:
+        pipelife_users_list = [PipeLifeUser(client_id=user['TCN_CLIENT_ID'], client_secret=user['TCN_CLIENT_SECRET'],
+                                            client_username=user['TCN_MYUSER'], password=user['TCN_MYPASS']) for user in
+                               pipelife_users]
+        selected_culverts = list(itertools.chain(
+            *[x.get_culverts_from_id_list(pipelife_ids.split(',')) for x in pipelife_users_list]))
+        all_pipes_data = [culvert.get_hourly_data(date_range) for culvert in selected_culverts]
+        return all_pipes_data
 
 
 @app.get("/PipeLife/id/tags", tags=['PipeLife'])
-def get_tags_from_id(pipelife_ids: str) -> list[Any]:
+def get_tags_from_id(pipelife_ids: str, pipelife_user: str | None = None) -> list[Any]:
     """
     Returns a list containing hourly water level data of the input culvert.
     """
-    pipelife_users_list = [PipeLifeUser(client_id=user['TCN_CLIENT_ID'], client_secret=user['TCN_CLIENT_SECRET'],
-                                        client_username=user['TCN_MYUSER'], password=user['TCN_MYPASS']) for user in
-                           pipelife_users]
-    selected_culverts = list(itertools.chain(
-        *[x.get_culverts_from_id_list(pipelife_ids.split(',')) for x in pipelife_users_list]))
-    print(selected_culverts)
-    all_pipes_data = [culvert.get_tags_from_id() for culvert in selected_culverts]
+    if pipelife_user:
+        user = [i for i in pipelife_users if i['TCN_MYUSER'] == pipelife_user]
+        if not user:
+            raise HTTPException(status_code=400, detail=f'Pipelife User: "{pipelife_user}", is not recognized.')
+        pipe_life_user = PipeLifeUser(client_id=user[0]['TCN_CLIENT_ID'], client_secret=user[0]['TCN_CLIENT_SECRET'],
+                                      client_username=user[0]['TCN_MYUSER'], password=user[0]['TCN_MYPASS'])
+        selected_culverts = pipe_life_user.get_culverts_from_id_list(pipelife_ids.split(','))
+        if not selected_culverts:
+            raise HTTPException(status_code=400, detail=f'Pipelife id(s) do not belong to {pipelife_user}')
+        all_pipes_data = [culvert.get_tags_from_id() for culvert in selected_culverts]
+        if not all_pipes_data:
+            raise HTTPException(status_code=400, detail=f'No Data found for date and culvert combination.')
+        return all_pipes_data
+    else:
+        pipelife_users_list = [PipeLifeUser(client_id=user['TCN_CLIENT_ID'], client_secret=user['TCN_CLIENT_SECRET'],
+                                            client_username=user['TCN_MYUSER'], password=user['TCN_MYPASS']) for user in
+                               pipelife_users]
+        selected_culverts = list(itertools.chain(
+            *[x.get_culverts_from_id_list(pipelife_ids.split(',')) for x in pipelife_users_list]))
+        all_pipes_data = [culvert.get_tags_from_id() for culvert in selected_culverts]
     return all_pipes_data
 
 

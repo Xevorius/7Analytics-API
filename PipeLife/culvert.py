@@ -9,16 +9,24 @@ __status__ = "Development"
 # local imports:
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import List, Any
+from typing import List, Any, Dict
 
 # third-party imports:
 import pandas as pd
 import pytz
 import requests
+from pydantic import BaseModel
 from termcolor import colored
 
 from exceptions import InvalidPipeLifeCredentials
 from date_range import DateRange
+
+
+class CulvertResults(BaseModel):
+    id: str
+    timestamp: list[int]
+    values: list[float]
+    images: list[dict[str, str | int]]
 
 
 class Culvert(ABC):
@@ -83,7 +91,7 @@ class PipeLifeCulvert(Culvert):
 
         return tag_ids
 
-    def get_hourly_data(self, date_range: DateRange) -> list[object]:
+    def get_hourly_data(self, date_range: DateRange) -> list[CulvertResults]:
         """
         Request all logged values and timestamps available for this location within the inputted dates.
 
@@ -92,22 +100,20 @@ class PipeLifeCulvert(Culvert):
         :param end_time: Integer representing an end date in Unix time.
         :return: Dataframe containing timestamps and values gathered between the given dates.
         """
-        df_list = []
+        culvert_result_list = []
         for id in self._water_level_ids:
             api_endpoint = f'https://www.telecontrolnet.nl/api/v1/trend/{id}'
             values_request = requests.get(api_endpoint,
                                           {'access_token': self._access_token, "s": date_range.min_date_unix,
                                            'e': date_range.max_date_unix})
             response = values_request.json()
-            data = [[int(i['logtime@uts']) * 1000, float(i['logvalue'])] for i in response]
-            df = pd.DataFrame(data, columns=["timestamp", "values"])
+            df = pd.json_normalize(response)
             df['has_image'] = ['null'] * len(df)
-            image_timestamps = self.get_images_list(date_range)
-            if image_timestamps:
-                df_list.append(self._update_has_image(df, image_timestamps).values.tolist())
-            else:
-                df_list.append(df.values.tolist())
-        return df_list
+            df.drop(columns=['flag'])
+            culvert_result_list.append(
+                CulvertResults(id=self._location_id, timestamp=list(df['logtime@uts']), values=list(df['logvalue']),
+                               images=self.get_images_list(date_range)))
+        return culvert_result_list
 
     def get_tags_from_id(self) -> list[object]:
         """
@@ -118,7 +124,7 @@ class PipeLifeCulvert(Culvert):
         :return: Dataframe containing timestamps and values gathered between the given dates.
         """
         api_endpoint = f'https://www.telecontrolnet.nl/api/v1/locations/{self._location_id}/tags'
-        values_request = requests.get(api_endpoint,{'access_token': self._access_token})
+        values_request = requests.get(api_endpoint, {'access_token': self._access_token})
         response = values_request.json()
         return response
 
@@ -131,16 +137,14 @@ class PipeLifeCulvert(Culvert):
         :param image_timestamps: List containing the Image timestamps
         :return: Pandas DataFrame containing the update has)image values
         """
-        print(len(image_timestamps))
         for index, row in df.iterrows():
             for i in image_timestamps:
-                if int(str(row['timestamp'])[:-5]) == int(str(i[0])[:-2]):
-                    print('found')
+                if int(str(row['logtime@uts'])[:-5]) == int(str(i[0])[:-2]):
                     df.at[
-                        index, 'has_image'] = f'<div><p>Water level: {row["values"]}</p><br><img src="https://www.telecontrolnet.nl/api/v1/locations/32313138-30/files/{i[1]}?contents=1&access_token={self._access_token}" width="250" height="200"/></div>'
+                        index, 'has_image'] = f'https://www.telecontrolnet.nl/api/v1/locations/32313138-30/files/{i[1]}?contents=1&access_token={self._access_token}'
         return df
 
-    def get_images_list(self, date_range: DateRange) -> list[tuple[int, str]] | None:
+    def get_images_list(self, date_range: DateRange) -> list[dict[str, str | int]] | None:
         """
         Post requests all the timestamps where the Pipelife API has made images of the culvert.
 
@@ -173,7 +177,7 @@ class PipeLifeCulvert(Culvert):
             return self._get_image_url(dir, response)
 
     @staticmethod
-    def _get_image_url(dir: str, image_list: list[dict]) -> list[tuple[int, str]]:
+    def _get_image_url(dir: str, image_list: list[dict]) -> list[dict[str, str | int]]:
         """
         Try to decipher the url to the requested image. This process will be streamlined by PipeLife in the future.
         Currently, we have to construct the url by adding the timestamp of the supposed image to a string. This has
@@ -191,7 +195,7 @@ class PipeLifeCulvert(Culvert):
                         f'{datelist[0]}3{datelist[1]}-3{datelist[2]}3{datelist[3]}-2d3{datelist[5]}-3{datelist[6]}' \
                         f'2d-3{datelist[8]}3{datelist[9]}-2d3{datelist[11]}-3{datelist[12]}3{datelist[14]}-3{datelist[15]}' \
                         f'3{datelist[17]}-3{datelist[18]}2e-6a70-6567'
-            image_urls.append((int(i['logtime@uts']), url))
+            image_urls.append({'timestamp':int(i['logtime@uts']), 'url': url})
         return image_urls
 
 
@@ -230,7 +234,6 @@ class PipeLifeUser:
         token_request = requests.post(token_endpoint, parameters)
         if 'error' in token_request.json():
             raise InvalidPipeLifeCredentials
-        print(token_request.json()['access_token'])
         return token_request.json()['access_token']
 
     def get_culverts_from_id_list(self, ids: list[str]) -> list[PipeLifeCulvert]:
@@ -239,19 +242,12 @@ class PipeLifeUser:
 
         :return: List containing the culvert classes of the requested locations
         """
-        print(ids)
         api_endpoint = f'https://www.telecontrolnet.nl/api/v1/locations'
         api_request = requests.get(api_endpoint, {'access_token': self.access_token})
         location_id_list = [
             PipeLifeCulvert(self.access_token, i['location']['id'],
                             [float(i['location']['y']), float(i['location']['x'])]) for i in
             api_request.json()['locations'] if i['location']['id'] in ids]
-        # location_id_list = []
-        # for i in api_request.json()['locations']:
-        #     print(i['location']['id'])
-        #     if i['location']['id'] in ids:
-        #         print('hit')
-        #         # location_id_list.append(i['location']['id'])
         return location_id_list
 
     def __str__(self):
