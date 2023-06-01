@@ -17,7 +17,8 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse, Response
 from dotenv import dotenv_values
 from MET.forecast_api import get_forecast
-from PipeLife.culvert import PipeLifeUser, CulvertResults
+from NVE.nve_api import get_nearest_station_obesrvation
+from PipeLife.culvert import PipeLifeUser, CulvertResults, PipeLifeCulvert
 from Schemas.schemas_met import MetStation
 from date_range import DateRange
 from MET.met_api import get_nearest_stations_to_point, get_station_within_polygon, get_processed_station_observations, \
@@ -206,8 +207,7 @@ def get_all_weather_station(polygon_wkt: str, date_range: str, crs=4326, output:
 # 2020-02-01/2020-02-02
 # POLYGON((5 60, 6 60, 6 61, 5 61, 5 60))
 @app.get("/MET/polygon/precipitation", tags=['MET.NO'])
-def get_all_weather_station_precipitation(polygon_wkt: str, date_range: str, crs=4326, output: str = 'python') -> list[
-                                                                                                                      MetStation] | str:
+def get_all_weather_station_precipitation(polygon_wkt: str, date_range: str, crs=4326, output: str = 'python') -> list[MetStation]:
     """
     Returns a list of the hourly precipitation of all weather stations within the input polygon with full precipitation.
     """
@@ -327,7 +327,7 @@ def get_imerg_precipitation_from_polygon(polygon_wkt: str, date_range: str, crs=
 
 
 @app.get("/NVE/point/flow", tags=['NVE'])
-def get_closest_culvert_data(point_wkt: str, date_range: str, crs=4326) -> list[Any]:
+def get_closest_culvert_data(point_wkt: str, date_range: str, crs=4326) -> Response:
     """
     Returns hourly water level and/or water flow (depending on what is available) of the closest culvert to the input
     point.
@@ -413,8 +413,7 @@ def get_idf_from_point(point_wkt: str, crs: int = 4326) -> Response:
 
 
 @app.get("/PipeLife/id/waterlevel", tags=['PipeLife'])
-def get_water_level_from_id(pipelife_ids: str, date_range: str, pipelife_user: str | None = None) -> list[list[
-    CulvertResults]] | list[Any]:
+def get_water_level_from_id(pipelife_ids: str, date_range: str, pipelife_user: str | None = None) -> list[list[CulvertResults]] | list[Any]:  # , verify:bool = True
     """
     Returns a list containing hourly water level data of the input culvert.
     """
@@ -425,6 +424,10 @@ def get_water_level_from_id(pipelife_ids: str, date_range: str, pipelife_user: s
             raise HTTPException(status_code=400, detail=f'Pipelife User: "{pipelife_user}", is not recognized.')
         pipe_life_user = PipeLifeUser(client_id=user[0]['TCN_CLIENT_ID'], client_secret=user[0]['TCN_CLIENT_SECRET'],
                                       client_username=user[0]['TCN_MYUSER'], password=user[0]['TCN_MYPASS'])
+        # if not verify:
+        #     location_id_list = [
+        #         PipeLifeCulvert(pipe_life_user.access_token, int(i),
+        #                         [float(i['location']['y']), float(i['location']['x'])]) for i in pipelife_ids]
         selected_culverts = pipe_life_user.get_culverts_from_id_list(pipelife_ids.split(','))
         if not selected_culverts:
             raise HTTPException(status_code=400, detail=f'Pipelife id(s) do not belong to {pipelife_user}')

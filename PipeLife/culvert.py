@@ -15,18 +15,11 @@ from typing import List, Any, Dict
 import pandas as pd
 import pytz
 import requests
-from pydantic import BaseModel
 from termcolor import colored
 
+from Schemas.schemas_pipelife import CulvertResults
 from exceptions import InvalidPipeLifeCredentials
 from date_range import DateRange
-
-
-class CulvertResults(BaseModel):
-    id: str
-    timestamp: list[int]
-    values: list[float]
-    images: list[dict[str, str | int]] | None
 
 
 class Culvert(ABC):
@@ -52,7 +45,7 @@ class Culvert(ABC):
 
 
 class PipeLifeCulvert(Culvert):
-    def __init__(self, access_token: str, location_id: int, location: list[float]) -> None:
+    def __init__(self, access_token: str, location_id: str, location: list[float]) -> None:
         """
         Initiation method for the PipeLifeCulvert class
 
@@ -88,7 +81,7 @@ class PipeLifeCulvert(Culvert):
         water_level_index = \
             [index for index, i in enumerate(self._response['tags']) if i['tag']['description'] == 'Water Level']
         tag_ids = [self._response['tags'][i]['tag']['id'] for i in water_level_index]
-
+        print(tag_ids)
         return tag_ids
 
     def get_hourly_data(self, date_range: DateRange) -> list[CulvertResults]:
